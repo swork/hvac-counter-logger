@@ -3,6 +3,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+
 class MyRTC:
     MON = {
         "Jan": 1,
@@ -16,7 +17,7 @@ class MyRTC:
         "Sep": 9,
         "Oct": 10,
         "Nov": 11,
-        "Dec": 12
+        "Dec": 12,
     }
 
     def __init__(self, http_date_re):
@@ -37,19 +38,34 @@ class MyRTC:
         return time.strftime("%Y-%b-%dT%H:%M:%S", self.now_tuple_for_upy_strftime())
 
     def set_from_http(self, aiohttp_client_response):
-        response_time = aiohttp_client_response.headers['Date']
+        response_time = aiohttp_client_response.headers["Date"]
         mo = re.search(self._http_date_re, response_time)
         if not mo:
-            raise RuntimeError(f'HTTP Date header format unrecognized {aiohttp_client_response.headers}')
+            raise RuntimeError(
+                f"HTTP Date header format unrecognized {aiohttp_client_response.headers}"
+            )
         g = mo.group
         try:
             # g(0) is entire match; g(1) is day of week; g(2) is day of month
-            parsed_time = (int(g(4)), self.MON[g(3)], int(g(2)), 0, int(g(5)), int(g(6)), int(g(7)), 0)
+            parsed_time = (
+                int(g(4)),
+                self.MON[g(3)],
+                int(g(2)),
+                0,
+                int(g(5)),
+                int(g(6)),
+                int(g(7)),
+                0,
+            )
         except KeyError:
-            print(f'HTTP Date problem, maybe unknown month name? {aiohttp_client_response.headers}')
+            print(
+                f"HTTP Date problem, maybe unknown month name? {aiohttp_client_response.headers}"
+            )
             raise
         n = self.now_tuple_for_upy_strftime()
-        if n[0] < 2024 or abs(parsed_time[6] - n[6]) > 2:  # old, or 2s different; hits on minute rollover too
+        if (
+            n[0] < 2024 or abs(parsed_time[6] - n[6]) > 2
+        ):  # old, or 2s different; hits on minute rollover too
             self._rtc.datetime(parsed_time)
 
 
@@ -73,5 +89,5 @@ def report_error(e):
     # incomplete machine.RTC implementation on rp2, sheesh
     print(repr(e))
     with open("hvac.log", "a") as logfile:
-        logfile.write(f'\n\n=========== {MyRTC().now_iso()} ==============\n')
+        logfile.write(f"\n\n=========== {MyRTC().now_iso()} ==============\n")
         logfile.write(repr(e))

@@ -6,6 +6,15 @@ import time
 from async_urequests import request
 import uasyncio
 from hardware_rp2 import MyRTC, blink_led, machine_soft_reset, report_error
+from password import (
+    _404HB_WIFI_SSID,
+    _404HB_WIFI_PASSWORD,
+    _404HB_COUCHDB_HOSTNAME,
+    _404HB_COUCHDB_SERVICE_PORT,
+    _404HB_COUCHDB_PROTOCOL,
+    _404HB_COUCHDB_DBNAME,
+)
+
 
 # Hardware configuration (RP2040, Raspberry Pi Pico W)
 _ADC_PANEL_TEMP: int = None  # GPIO to configure as ADC
@@ -24,16 +33,16 @@ _GPIO_ZONE2: int = None
 _GPIO_ZONE3: int = None
 _GPIO_ZONE4: int = None
 
-# Environment configuration
-_404HB_WIFI_SSID = 'FourOhFour'
-_404HB_WIFI_PASSWORD = 'happiness'
-_404HB_COUCHDB_HOSTNAME = '192.168.2.246'
-_404HB_COUCHDB_SERVICE_PORT = '5984'
-_404HB_COUCHDB_PROTOCOL = 'http'
-_404HB_COUCHDB_DBNAME = 'hvac'
+# Environment configuration. "from password import ..." above covers these values.
+# _404HB_WIFI_SSID: str = None
+# _404HB_WIFI_PASSWORD: str = None
+# _404HB_COUCHDB_HOSTNAME:str = None
+# _404HB_COUCHDB_SERVICE_PORT:str = '5984'
+# _404HB_COUCHDB_PROTOCOL = 'http'
+# _404HB_COUCHDB_DBNAME = 'hvac'
 
 # "Fri, 12 Jan 2024 12:51:40 GMT"
-_COUCHDB_DATE_RE = r'\s*(\w+),\s+(\d+)\s+(\w+)\s+(\d+)\s+(\d+)\:(\d+)\:(\d+)\s+(\w+)'
+_COUCHDB_DATE_RE = r"\s*(\w+),\s+(\d+)\s+(\w+)\s+(\d+)\s+(\d+)\:(\d+)\:(\d+)\s+(\w+)"
 
 
 async def wifi_connect():
@@ -165,17 +174,16 @@ class HvacReader:
 
 def iso_date_time(couchdb_date_string):
     parsed_time = datetime.strptime(couchdb_date_string, _COUCHDB_STRPTIME_FORMAT)
-    return parsed_time.strftime('%Y-%m-%dT%H:%M:%S')
-
+    return parsed_time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 async def main(put_target_url):
     ip = await wifi_connect()
-    print(f'My ip:{ip}')
+    print(f"My ip:{ip}")
 
-    headers={
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
     rtc = MyRTC(_COUCHDB_DATE_RE)
 
@@ -184,17 +192,17 @@ async def main(put_target_url):
     response = await request("GET", put_target_url, headers=headers)
     if response.status_code == 200:
         rtc.set_from_http(response)
-        print(f'set clock: {rtc.now_iso()}')
+        print(f"set clock: {rtc.now_iso()}")
     else:
         body = await response.json()
-        raise RuntimeError('clock retrieve failed: {body}')
+        raise RuntimeError("clock retrieve failed: {body}")
 
     hvac = HvacReader()
     old_digitals = None
     last_post_time = None
     last_post_time_matches = 0
     while True:
-        print('loop top')
+        print("loop top")
         state = hvac.read_io_state()
         if state.digitals != old_digitals:
             old_digitals = state.digitals
@@ -202,37 +210,36 @@ async def main(put_target_url):
             post_time = rtc.now_iso()
             if post_time == last_post_time:
                 last_post_time_matches += 1
-                post_time += f'.{last_post_time_matches}'
+                post_time += f".{last_post_time_matches}"
             else:
                 last_post_time = post_time
                 last_post_time_matches = 0
             body["_id"] = post_time
-            response = await request("POST",
-                                     put_target_url,
-                                     headers=headers,
-                                     data=json.dumps(body))
+            response = await request(
+                "POST", put_target_url, headers=headers, data=json.dumps(body)
+            )
             if response.status_code != 200 and response.status_code != 201:
                 rb = await response.json()
-                raise RuntimeError(f"Failed to post state, {response.status_code}: {rb}")
-            print(f'response: {response} body:{await response.json()}')
+                raise RuntimeError(
+                    f"Failed to post state, {response.status_code}: {rb}"
+                )
+            print(f"response: {response} body:{await response.json()}")
             rtc.set_from_http(response)
             blink_led(1, 100, 100)
             await uasyncio.sleep(0.05)
         blink_led(1, 100, 100)
-        print('sleep 5')
+        print("sleep 5")
         await uasyncio.sleep(4.9)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         url = f"{_404HB_COUCHDB_PROTOCOL}://{_404HB_COUCHDB_HOSTNAME}:{_404HB_COUCHDB_SERVICE_PORT}/{_404HB_COUCHDB_DBNAME}"
         uasyncio.run(main(url))
     except Exception as e:
         sys.print_exception(e)
         with open("/hvac.log", "a") as f:
-            f.write(f'\n\n=========== {time.gmtime()} ==============\n')
+            f.write(f"\n\n=========== {time.gmtime()} ==============\n")
             sys.print_exception(e, f)
         blink_led(3, 100, 100)
         machine_soft_reset()
-
-

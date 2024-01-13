@@ -1,0 +1,5 @@
+# Don't publish the home wifi password.
+password.py
+
+# venv for dev tools
+venv

@@ -3,11 +3,11 @@ import sys
 import time
 import unittest
 
-class FakeResponse():
+
+class FakeResponse:
     def __init__(self):
-        self.headers = {
-            "Date": "Fri, 12 Jan 2024 20:51:40 GMT"
-        }
+        self.headers = {"Date": "Fri, 12 Jan 2024 20:51:40 GMT"}
+
 
 class TestClock(unittest.TestCase):
     def test_sync(self):
@@ -24,5 +24,6 @@ class TestClock(unittest.TestCase):
         time.sleep(2)
         t = rtc.now_tuple()
         self.assertTrue(t[6] > 41)
+
 
 unittest.main(module=sys.modules[__name__])
