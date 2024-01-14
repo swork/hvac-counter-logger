@@ -2,4 +2,4 @@ datetime
 os
 time
 unittest
-https://raw.githubusercontent.com/Carglglz/asyncmd/main/async_modules/async_urequests/async_urequests.py
+aiohttp
