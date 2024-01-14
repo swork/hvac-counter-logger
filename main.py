@@ -3,7 +3,7 @@ import network
 import os
 import sys
 import time
-from async_urequests import request
+import aiohttp
 import uasyncio
 from hardware_rp2 import MyRTC, blink_led, machine_soft_reset, report_error
 from password import (
@@ -189,47 +189,50 @@ async def main(put_target_url):
 
     # Once per run: set clock
     print(put_target_url)
-    response = await request("GET", put_target_url, headers=headers)
-    if response.status_code == 200:
-        rtc.set_from_http(response)
-        print(f"set clock: {rtc.now_iso()}")
-    else:
-        body = await response.json()
-        raise RuntimeError("clock retrieve failed: {body}")
-
-    hvac = HvacReader()
-    old_digitals = None
-    last_post_time = None
-    last_post_time_matches = 0
-    while True:
-        print("loop top")
-        state = hvac.read_io_state()
-        if state.digitals != old_digitals:
-            old_digitals = state.digitals
-            body = state.as_dict
-            post_time = rtc.now_iso()
-            if post_time == last_post_time:
-                last_post_time_matches += 1
-                post_time += f".{last_post_time_matches}"
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.request("GET", put_target_url) as response:
+            print(response)
+            if response.status == 200:
+                rtc.set_from_http(response)
+                print(f"set clock: {rtc.now_iso()}")
             else:
-                last_post_time = post_time
-                last_post_time_matches = 0
-            body["_id"] = post_time
-            response = await request(
-                "POST", put_target_url, headers=headers, data=json.dumps(body)
-            )
-            if response.status_code != 200 and response.status_code != 201:
-                rb = await response.json()
-                raise RuntimeError(
-                    f"Failed to post state, {response.status_code}: {rb}"
-                )
-            print(f"response: {response} body:{await response.json()}")
-            rtc.set_from_http(response)
+                body = await response.json()
+                raise RuntimeError("clock retrieve failed: {body}")
+
+        hvac = HvacReader()
+        old_digitals = None
+        last_post_time = None
+        last_post_time_matches = 0
+        while True:
+            print("loop top")
+            state = hvac.read_io_state()
+            if state.digitals != old_digitals:
+                old_digitals = state.digitals
+                body = state.as_dict
+                post_time = rtc.now_iso()
+                if post_time == last_post_time:
+                    last_post_time_matches += 1
+                    post_time += f".{last_post_time_matches}"
+                else:
+                    last_post_time = post_time
+                    last_post_time_matches = 0
+                    body["_id"] = post_time
+                async with session.request(
+                    "POST", put_target_url, data=json.dumps(body)
+                ) as response:
+                    print(response)
+                    if response.status != 200 and response.status != 201:
+                        rb = await response.json()
+                        raise RuntimeError(
+                            f"Failed to post state, {response.status}: {rb}"
+                        )
+                    print(f"response: {response} body:{await response.json()}")
+                    rtc.set_from_http(response)
+                    blink_led(1, 100, 100)
+                    await uasyncio.sleep(0.05)
             blink_led(1, 100, 100)
-            await uasyncio.sleep(0.05)
-        blink_led(1, 100, 100)
-        print("sleep 5")
-        await uasyncio.sleep(4.9)
+            print("sleep 5")
+            await uasyncio.sleep(4.9)
 
 
 if __name__ == "__main__":
