@@ -50,6 +50,19 @@ class MyRTC:
         )
         return t
 
+    @classmethod
+    def upyrp2040tuple_from_pydttuple(cls, p: struct_time) -> tuple:
+        return (
+            p[0],  # year
+            p[1],  # mon
+            p[2],  # day
+            p[7],  # dow
+            p[3],  # hour
+            p[4],  # min
+            p[5],  # sec
+            0      # subsec
+        )
+
     def timestamp(self) -> int:
         t = self.pydttuple_from_upyrp2040tuple(self._rtc.datetime())
         return self.timestamp_from_pydttuple(t)
@@ -103,10 +116,14 @@ class MyRTC:
             pydt_tuple_now[0] < 2024
             or abs(pydt_tuple_parsed[5] - pydt_tuple_now[5]) > 2
         ):  # old, or 2s different; hits on minute rollover too
-            p = pydt_tuple_parsed
-            self._rtc.datetime(
-                (p.tm_year, p.tm_mon, p.tm_day, 0, p.tm_hour, p.tm_min, p.tm_sec, 0)
-            )
+            try:
+                self._rtc.datetime(
+                    self.upyrp2040tuple_from_pydttuple(pydt_tuple_parsed)
+                )
+            except:
+                print(f"trouble setting RTC from converted pydt {pydt_tuple_parsed}")
+                print(f" ... which gave upy {self.upyrp2040tuple_from_pydttuple(pydt_tuple_parsed)}")
+                raise
 
 
 class PicoLED:

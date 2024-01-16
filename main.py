@@ -353,7 +353,7 @@ if __name__ == "__main__":
     # Runtime, and runtime errors
     try:
         with open("/hvac.log", "a") as f:
-            f.write(f"============== Running: {time.gmtime()} ==============\n")
+            f.write(f"==============  Running: {time.gmtime()} ==============\n")
         uasyncio.run(async_run(runtime_cfg))
     except Exception as e:
         sys.print_exception(e)
