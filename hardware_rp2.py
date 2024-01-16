@@ -1,10 +1,19 @@
+import asyncio
 import machine
 import re
 import time
 from datetime import datetime, timezone
 
+struct_time = tuple  # not available as time.struct_time
+
 
 class MyRTC:
+    """Abstract away the RP2040 machine.RTC implementation.
+    Please don't expose a tuple representing date/time in Python that's
+    different from the Python time.struct_time. It's quite confusing
+    and burns up RAM tracking the differences.
+    """
+
     MON = {
         "Jan": 1,
         "Feb": 2,
@@ -24,70 +33,104 @@ class MyRTC:
         self._rtc = machine.RTC()
         self._http_date_re = http_date_re
 
-    def timestamp(self):
-        t = self._rtc.datetime()
-        return int(datetime(*t[0:7], timezone.utc).timestamp())
-
-    def now_tuple_for_upy_strftime(self):
-        t = self._rtc.datetime()
-
-        # upy components can't agree on datetime tuple fields. Sheesh.
-        return (t[0], t[1], t[2], t[4], t[5], t[6], 0, 0, 0, None)
-
-    def now_iso(self):
-        return time.strftime("%Y-%b-%dT%H:%M:%S", self.now_tuple_for_upy_strftime())
-
-    def set_from_http(self, aiohttp_client_response):
-        response_time = aiohttp_client_response.headers["Date"]
-        mo = re.search(self._http_date_re, response_time)
-        if not mo:
-            raise RuntimeError(
-                f"HTTP Date header format unrecognized {aiohttp_client_response.headers}"
+    @classmethod
+    def pydttuple_from_upyrp2040tuple(cls, upyrp2040tuple: tuple) -> struct_time:
+        t = struct_time(
+            (
+                upyrp2040tuple[0],  # year
+                upyrp2040tuple[1],  # mon
+                upyrp2040tuple[2],  # day
+                upyrp2040tuple[4],  # hour
+                upyrp2040tuple[5],  # min
+                upyrp2040tuple[6],  # sec
+                0,  # isdst
+                "GMT",  # zone
+                0,  # offset
             )
+        )
+        return t
+
+    def timestamp(self) -> int:
+        t = self.pydttuple_from_upyrp2040tuple(self._rtc.datetime())
+        return self.timestamp_from_pydttuple(t)
+
+    @classmethod
+    def was_seconds_ago(
+        cls, newer: struct_time, older: struct_time, seconds: int
+    ) -> bool:
+        return time.mktime(newer) - time.mktime(older) >= seconds
+
+    @classmethod
+    def pydt_tuple_as_iso(cls, t: struct_time) -> str:
+        return time.strftime("%Y-%b-%dT%H:%M:%S", t)
+
+    def now(self) -> struct_time:
+        return self.pydttuple_from_upyrp2040tuple(self._rtc.datetime())
+
+    def now_iso(self) -> str:
+        pydt_tuple = self.now()
+        return self.pydt_tuple_as_iso(pydt_tuple)
+
+    def set_from_http_date(self, http_date: str) -> None:
+        """Set machine.RTC.datetime from an HTTP response header.
+        RP2040 RTC uses a different tuple layout than Python.
+        We try to store only the Python tuple format.
+        """
+        mo = re.search(self._http_date_re, http_date)
+        if not mo:
+            raise RuntimeError(f"HTTP Date header format unrecognized {http_date}")
         g = mo.group
         try:
             # g(0) is entire match; g(1) is day of week; g(2) is day of month
-            parsed_time = (
-                int(g(4)),
-                self.MON[g(3)],
-                int(g(2)),
-                0,
-                int(g(5)),
-                int(g(6)),
-                int(g(7)),
-                0,
+            pydt_tuple_parsed = struct_time(
+                (
+                    int(g(4)),  # year
+                    self.MON[g(3)],  # mon
+                    int(g(2)),  # day
+                    int(g(5)),  # hour
+                    int(g(6)),  # min
+                    int(g(7)),  # sec
+                    0,  # isdst
+                    g(8),  # zone, acting on expectation "GMT"
+                    0,  # offset
+                )
             )
         except KeyError:
-            print(
-                f"HTTP Date problem, maybe unknown month name? {aiohttp_client_response.headers}"
-            )
+            print(f"HTTP Date problem, maybe unknown month name? {http_date}")
             raise
-        n = self.now_tuple_for_upy_strftime()
+        pydt_tuple_now = self.pydttuple_from_upyrp2040tuple(self._rtc.datetime())
         if (
-            n[0] < 2024 or abs(parsed_time[6] - n[6]) > 2
+            pydt_tuple_now[0] < 2024
+            or abs(pydt_tuple_parsed[5] - pydt_tuple_now[5]) > 2
         ):  # old, or 2s different; hits on minute rollover too
-            self._rtc.datetime(parsed_time)
+            p = pydt_tuple_parsed
+            self._rtc.datetime(
+                (p.tm_year, p.tm_mon, p.tm_day, 0, p.tm_hour, p.tm_min, p.tm_sec, 0)
+            )
 
 
-def blink_led(blinks, blink_on_ms, blink_off_ms):
-    led = machine.Pin("LED", machine.Pin.OUT)
-    led.off()
-    for i in range(0, blinks):
-        if i > 0:
-            time.sleep(blink_off_ms / 1000)
-        led.on()
-        time.sleep(blink_on_ms / 1000)
-        led.off()
+class PicoLED:
+    def __init__(self, pin="LED"):
+        self._led = machine.Pin(pin, machine.Pin.OUT)
+
+    def sync_blink(self, blinks, blink_on_ms, blink_off_ms):
+        self._led.off()
+        for i in range(0, blinks):
+            if i > 0:
+                time.sleep(blink_off_ms / 1000)
+            self._led.on()
+            time.sleep(blink_on_ms / 1000)
+            self._led.off()
+
+    async def async_blink(self, blinks, blink_on_ms, blink_off_ms):
+        self._led.off()
+        for i in range(0, blinks):
+            if i > 0:
+                await asyncio.sleep(blink_off_ms / 1000)
+            self._led.on()
+            await asyncio.sleep(blink_on_ms / 1000)
+            self._led.off()
 
 
 def machine_soft_reset():
     machine.soft_reset()
-
-
-def report_error(e):
-    # incomplete traceback dependency implementation on rp2
-    # incomplete machine.RTC implementation on rp2, sheesh
-    print(repr(e))
-    with open("hvac.log", "a") as logfile:
-        logfile.write(f"\n\n=========== {MyRTC().now_iso()} ==============\n")
-        logfile.write(repr(e))
