@@ -1,11 +1,12 @@
 """Log state changes at home HVAC"""
 
+import aiohttp
+import gc
 import json
 import machine
 import network
 import sys
 import time
-import aiohttp
 import uasyncio
 from hardware_rp2 import MyRTC, machine_soft_reset, PicoLED
 import onewire
@@ -20,25 +21,22 @@ from secret.couchdb import (
 
 
 # Hardware configuration (RP2040, Raspberry Pi Pico W)
-_ADC_PANEL_TEMP: int = None  # GPIO to configure as ADC
-
-_GPIO_1W: int = 22  # GPIO to configure for 1W protocol
+_GPIO_1W: int = 22  # Configure GPIO22 for 1W protocol
 _1W_TEMP_SENSORS = {
     "outdoor": bytes(b"(\x87\x8bX\x12\x19\x01\x0b"),
     "discharge": None,
     "return": None,
-    "ambient": None,
 }
 
-_GPIO_HEAT: int = None  # GPIO to read for HEAT digital input
-_GPIO_COOL: int = None
-_GPIO_FAN: int = None
-_GPIO_PURGE: int = None
-_GPIO_EMERGENCY: int = None
-_GPIO_ZONE1: int = None
-_GPIO_ZONE2: int = None
-_GPIO_ZONE3: int = None
-_GPIO_ZONE4: int = None
+_GPIO_HEAT: int = 1  # Read GPIO1 for HEAT digital input
+_GPIO_COOL: int = 2
+_GPIO_FAN: int = 3
+_GPIO_PURGE: int = 4
+_GPIO_EMERGENCY: int = 5
+_GPIO_ZONE1: int = 6
+_GPIO_ZONE2: int = 7
+_GPIO_ZONE3: int = 8
+_GPIO_ZONE4: int = 9
 
 # "Fri, 12 Jan 2024 12:51:40 GMT" without benefit of re.X or ?P<name>
 _COUCHDB_DATE_RE = r"\s*(\w+),\s+(\d+)\s+(\w+)\s+(\d+)\s+(\d+)\:(\d+)\:(\d+)\s+(\w+)"
@@ -47,30 +45,32 @@ _COUCHDB_DATE_RE = r"\s*(\w+),\s+(\d+)\s+(\w+)\s+(\d+)\s+(\d+)\:(\d+)\:(\d+)\s+(
 class HvacState:
     """State of HVAC system at a moment."""
 
-    _DIG_HEAT: int = 1 << 0  # Bitmask against .digitals for HEAT call value
-    _DIG_COOL: int = 1 << 1
-    _DIG_FAN: int = 1 << 2
-    _DIG_PURGE: int = 1 << 3
-    _DIG_EMERGENCY: int = 1 << 4
-    _DIG_ZONE1: int = 1 << 5
-    _DIG_ZONE2: int = 1 << 6
-    _DIG_ZONE3: int = 1 << 7
-    _DIG_ZONE4: int = 1 << 8
+    DIG_HEAT: int = 0  # Bit of .digitals for HEAT call value
+    DIG_COOL: int = 1
+    DIG_FAN: int = 2
+    DIG_PURGE: int = 3
+    DIG_EMERGENCY: int = 4
+    DIG_ZONE1: int = 5
+    DIG_ZONE2: int = 6
+    DIG_ZONE3: int = 7
+    DIG_ZONE4: int = 8
 
     def __init__(self, fakeDigitals=None, fakeTemps=None) -> None:
         """Class setup, allowing for testing."""
         self._digitals: int | None = fakeDigitals
-        self._panelTempC: float | None = fakeTemps
+        self._ambientTempC: float | None = fakeTemps
         self._outdoorTempC: float | None = fakeTemps
         self._dischargeTempC: float | None = fakeTemps
         self._returnTempC: float | None = fakeTemps
 
+    def __repr__(self):
+        return str(self.as_dict())
+
     def as_dict(self) -> dict:
         """Return self as a dict for JSON conversion."""
         try:
-            digs = self.digitals
             retval = {
-                "digitals": digs,
+                "digitals": self.digitals,
                 "heat": self.heat,
                 "cool": self.cool,
                 "fan": self.fan,
@@ -81,10 +81,11 @@ class HvacState:
                 "zone3": self.zone3,
                 "zone4": self.zone4,
             }
-        except:
+        except Exception as e:
+            print(e)
             retval = {}
         try:
-            retval["panelTempC"] = self.panelTempC
+            retval["ambientTempC"] = self.ambientTempC
         except:
             pass
         try:
@@ -110,7 +111,7 @@ class HvacState:
         # Bypass @property accessors so uninitialized values can be compared
         if self._digitals != other._digitals:
             return True
-        if other._panelTempC is not None and abs(self._panelTempC - other._panelTempC) > 2:
+        if other._ambientTempC is not None and abs(self._ambientTempC - other._ambientTempC) > 2:
             return True
         if other._outdoorTempC is not None and abs(self._outdoorTempC - other._outdoorTempC) > 1:
             return True
@@ -128,17 +129,17 @@ class HvacState:
 
     @digitals.setter
     def digitals(self, value: int) -> None:
-        self._outdoorTempC = value
+        self._digitals = value
 
     @property
-    def panelTempC(self) -> float:
-        if self._panelTemp is None:
+    def ambientTempC(self) -> float:
+        if self._ambientTemp is None:
             raise RuntimeError("uninitialized temperature accessed")
-        return self._panelTemp
+        return self._ambientTemp
 
-    @panelTempC.setter
-    def panelTempC(self, value: int) -> None:
-        self._panelTempC = value
+    @ambientTempC.setter
+    def ambientTempC(self, value: int) -> None:
+        self._ambientTempC = value
 
     @property
     def outdoorTempC(self) -> float:
@@ -170,41 +171,44 @@ class HvacState:
     def returnTempC(self, value: int) -> None:
         self._returnTempC = value
 
+    def _get_digitals_bit_truth(self, bit: int) -> bool:
+        return self._digitals & (1 << bit) != 0
+
     @property
     def heat(self) -> bool:
-        return self._digitals & self._DIG_HEAT != 0
+        return self._get_digitals_bit_truth(self.DIG_HEAT)
 
     @property
     def cool(self) -> bool:
-        return self._digitals & self._DIG_COOL != 0
+        return self._get_digitals_bit_truth(self.DIG_COOL)
 
     @property
     def fan(self) -> bool:
-        return self._digitals & self._DIG_FAN != 0
+        return self._get_digitals_bit_truth(self.DIG_FAN)
 
     @property
     def purge(self) -> bool:
-        return self._digitals & self._DIG_PURGE != 0
+        return self._get_digitals_bit_truth(self.DIG_PURGE)
 
     @property
     def emergency(self) -> bool:
-        return self._digitals & self._DIG_EMERGENCY != 0
+        return self._get_digitals_bit_truth(self.DIG_EMERGENCY)
 
     @property
     def zone1(self) -> bool:
-        return self._digitals & self._DIG_ZONE1 != 0
+        return self._get_digitals_bit_truth(self.DIG_ZONE1)
 
     @property
     def zone2(self) -> bool:
-        return self._digitals & self._DIG_ZONE2 != 0
+        return self._get_digitals_bit_truth(self.DIG_ZONE2)
 
     @property
     def zone3(self) -> bool:
-        return self._digitals & self._DIG_ZONE3 != 0
+        return self._get_digitals_bit_truth(self.DIG_ZONE3)
 
     @property
     def zone4(self) -> bool:
-        return self._digitals & self._DIG_ZONE4 != 0
+        return self._get_digitals_bit_truth(self.DIG_ZONE4)
 
 
 class HvacReader:
@@ -215,6 +219,16 @@ class HvacReader:
         self._1w = onewire.OneWire(machine.Pin(_GPIO_1W))
         self._ds18x20 = ds18x20.DS18X20(self._1w)
         self._temp_sensors = []
+
+        self._gpio_heat      = machine.Pin(_GPIO_HEAT, machine.Pin.IN, None)
+        self._gpio_cool      = machine.Pin(_GPIO_COOL, machine.Pin.IN, None)
+        self._gpio_fan       = machine.Pin(_GPIO_FAN, machine.Pin.IN, None)
+        self._gpio_purge     = machine.Pin(_GPIO_PURGE, machine.Pin.IN, None)
+        self._gpio_emergency = machine.Pin(_GPIO_EMERGENCY, machine.Pin.IN, None)
+        self._gpio_zone1      = machine.Pin(_GPIO_ZONE1, machine.Pin.IN, None)
+        self._gpio_zone2      = machine.Pin(_GPIO_ZONE2, machine.Pin.IN, None)
+        self._gpio_zone3      = machine.Pin(_GPIO_ZONE3, machine.Pin.IN, None)
+        self._gpio_zone4      = machine.Pin(_GPIO_ZONE4, machine.Pin.IN, None)
 
     def sync_scan_1w(self):
         """Do one-wire system setup."""
@@ -241,11 +255,26 @@ class HvacReader:
             if found:
                 self._temp_sensors.append((ds, found if found else ds.decode("utf-8")))
 
-    def read_io_state(self, state) -> None:
-        """Commit current state to HvacState object. Note (async) delay for temp conversions."""
+    async def read_io_state(self) -> state:
+        """Commit current state to HvacState object.
+        Note (async) delay for temp conversions.
+        Returns input object for convenience.
+        """
         self._ds18x20.convert_temp()
         state = HvacState()
-        uasyncio.sleep(
+        state.digitals = (
+            0
+            | self._gpio_heat.value() << state.DIG_HEAT
+            | self._gpio_cool.value() << state.DIG_COOL
+            | self._gpio_fan.value() << state.DIG_FAN
+            | self._gpio_purge.value() << state.DIG_PURGE
+            | self._gpio_emergency.value() << state.DIG_EMERGENCY
+            | self._gpio_zone1.value() << state.DIG_ZONE1
+            | self._gpio_zone2.value() << state.DIG_ZONE2
+            | self._gpio_zone3.value() << state.DIG_ZONE3
+            | self._gpio_zone4.value() << state.DIG_ZONE4
+        )
+        await uasyncio.sleep(
             0.750
         )  # worst case conversion time, revisit (don't need 1/16C resolution)
         for ds, found in self._temp_sensors:
@@ -254,15 +283,17 @@ class HvacReader:
             elif found == "discharge":
                 state.dischargeTempC = self._ds18x20.read_temp(ds)
             elif found == "return":
-                state.outdoorTempC = self._ds18x20.read_temp(ds)
+                state.returnTempC = self._ds18x20.read_temp(ds)
             elif found == "ambient":
-                state.outdoorTempC = self._ds18x20.read_temp(ds)
+                state.ambientTempC = self._ds18x20.read_temp(ds)
             else:
                 pass  # other temps on same network for other uses?
+        return state
 
 
 async def async_run(from_setup):
     led, put_target_url, hvac_reader = from_setup
+    print(f'async_run led:{led} url:{put_target_url} hvac_reader:{hvac_reader}')
 
     headers = {
         "Content-Type": "application/json",
@@ -284,8 +315,12 @@ async def async_run(from_setup):
         last_post_time = None
         last_post_time_matches = 0  # for >1 post per second, just in case
         while True:
-            state = HvacState()  # empty
-            hvac_reader.read_io_state(state)  # fill the empty HvacState
+            gc.collect()
+            f = gc.mem_free()
+            a = gc.mem_alloc()
+            print(f'Top of loop, RAM total:{f+a} alloc:{a} free:{f}')
+            state = await hvac_reader.read_io_state()
+            print(f' state: {repr(state)}')
             pydt_now = rtc.now()
             if state.difference_is_reportable(last_sent_state) or rtc.was_seconds_ago(
                 pydt_now, last_post_time, 3600
@@ -299,7 +334,8 @@ async def async_run(from_setup):
                 else:
                     last_post_time = post_time
                     last_post_time_matches = 0
-                    body["_id"] = rtc.pydt_tuple_as_iso(post_time)
+                body["_id"] = rtc.pydt_tuple_as_iso(post_time)
+                print(f' --> Posting at {body["_id"]}')
                 async with session.request(
                     "POST", put_target_url, data=json.dumps(body)
                 ) as response:
@@ -349,6 +385,10 @@ if __name__ == "__main__":
         with open("/hvac.log", "a") as f:
             sys.print_exception(e, f)
         machine_soft_reset()
+
+    f = gc.mem_free()
+    a = gc.mem_alloc()
+    print(f'RAM total:{f+a} alloc:{a} free:{f}')
 
     # Runtime, and runtime errors
     try:
