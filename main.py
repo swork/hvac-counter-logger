@@ -352,9 +352,9 @@ async def async_run(from_setup):
 
 
 def sync_setup(led):
-    SECRET_COUCHDB_HOSTNAME = "192.168.2.246"  # until we can do mdns resolves
     url = f"{SECRET_COUCHDB_PROTOCOL}://{SECRET_COUCHDB_HOSTNAME}:{SECRET_COUCHDB_SERVICE_PORT}/{SECRET_COUCHDB_DBNAME}"
 
+    network.country('US')
     network.hostname(open("/etc/hostname", "r").read())
     wlan = network.WLAN(network.STA_IF)
     print(f"wlan:{wlan}")
@@ -380,8 +380,8 @@ if __name__ == "__main__":
             f.write(f"\n\n============== Starting: {time.gmtime()} ==============\n")
         runtime_cfg = sync_setup(led)
     except Exception as e:
-        led.sync_blink(3, 400, 400)
         sys.print_exception(e)
+        led.sync_blink(3, 400, 400)
         with open("/hvac.log", "a") as f:
             sys.print_exception(e, f)
         machine_soft_reset()
@@ -397,8 +397,8 @@ if __name__ == "__main__":
         uasyncio.run(async_run(runtime_cfg))
     except Exception as e:
         sys.print_exception(e)
+        led.sync_blink(3, 100, 100)
         with open("/hvac.log", "a") as f:
             f.write(f"----------- {time.gmtime()} -----------\n")
             sys.print_exception(e, f)
-        led.sync_blink(3, 100, 100)
         machine_soft_reset()
