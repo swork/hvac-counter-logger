@@ -75,7 +75,7 @@ class MyRTC:
 
     @classmethod
     def pydt_tuple_as_iso(cls, t: struct_time) -> str:
-        return time.strftime("%Y-%b-%dT%H:%M:%S", t)
+        return time.strftime("%Y-%m-%dT%H:%M:%S", t)
 
     def now(self) -> struct_time:
         return self.pydttuple_from_upyrp2040tuple(self._rtc.datetime())
