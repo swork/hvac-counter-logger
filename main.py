@@ -3,11 +3,12 @@
 import aiohttp
 import gc
 import json
-import machine
+from machine import Pin
 import network
 import sys
 import time
 import uasyncio
+import webrepl
 from hardware_rp2 import MyRTC, machine_soft_reset, PicoLED
 import onewire
 import ds18x20
@@ -26,17 +27,18 @@ _1W_TEMP_SENSORS = {
     "outdoor": bytes(b"(\x87\x8bX\x12\x19\x01\x0b"),
     "discharge": None,
     "return": None,
+    "ambient": None
 }
 
-_GPIO_HEAT: int = 1  # Read GPIO1 for HEAT digital input
-_GPIO_COOL: int = 2
-_GPIO_FAN: int = 3
-_GPIO_PURGE: int = 4
-_GPIO_EMERGENCY: int = 5
-_GPIO_ZONE1: int = 6
-_GPIO_ZONE2: int = 7
-_GPIO_ZONE3: int = 8
-_GPIO_ZONE4: int = 9
+_GPIO_HEAT: int = 2  # Read GPIO2 for HEAT digital input
+_GPIO_COOL: int = 3
+_GPIO_FAN: int = 4
+_GPIO_PURGE: int = 5
+_GPIO_EMERGENCY: int = 6
+_GPIO_ZONE1: int = 7
+_GPIO_ZONE2: int = 8
+_GPIO_ZONE3: int = 9
+_GPIO_ZONE4: int = 10
 
 # "Fri, 12 Jan 2024 12:51:40 GMT" without benefit of re.X or ?P<name>
 _COUCHDB_DATE_RE = r"\s*(\w+),\s+(\d+)\s+(\w+)\s+(\d+)\s+(\d+)\:(\d+)\:(\d+)\s+(\w+)"
@@ -54,6 +56,7 @@ class HvacState:
     DIG_ZONE2: int = 6
     DIG_ZONE3: int = 7
     DIG_ZONE4: int = 8
+    DIG_MASK: int = 0b111111111
 
     def __init__(self, fakeDigitals=None, fakeTemps=None) -> None:
         """Class setup, allowing for testing."""
@@ -216,19 +219,33 @@ class HvacReader:
 
     def __init__(self):
         """Do basic hardware setup."""
-        self._1w = onewire.OneWire(machine.Pin(_GPIO_1W))
+        self._init_digitals()
+        self._1w = onewire.OneWire(Pin(_GPIO_1W))
         self._ds18x20 = ds18x20.DS18X20(self._1w)
         self._temp_sensors = []
 
-        self._gpio_heat      = machine.Pin(_GPIO_HEAT, machine.Pin.IN, None)
-        self._gpio_cool      = machine.Pin(_GPIO_COOL, machine.Pin.IN, None)
-        self._gpio_fan       = machine.Pin(_GPIO_FAN, machine.Pin.IN, None)
-        self._gpio_purge     = machine.Pin(_GPIO_PURGE, machine.Pin.IN, None)
-        self._gpio_emergency = machine.Pin(_GPIO_EMERGENCY, machine.Pin.IN, None)
-        self._gpio_zone1      = machine.Pin(_GPIO_ZONE1, machine.Pin.IN, None)
-        self._gpio_zone2      = machine.Pin(_GPIO_ZONE2, machine.Pin.IN, None)
-        self._gpio_zone3      = machine.Pin(_GPIO_ZONE3, machine.Pin.IN, None)
-        self._gpio_zone4      = machine.Pin(_GPIO_ZONE4, machine.Pin.IN, None)
+
+    def _init_digitals(self):
+        print("Digital inputs:")
+        # PULL_UP needed by MOC5007 optoisolator output
+        print(f'\tHeat\tGPIO{_GPIO_HEAT}')
+        self._gpio_heat      = Pin(_GPIO_HEAT, Pin.IN, Pin.PULL_UP)
+        print(f'\tCool\tGPIO{_GPIO_COOL}')
+        self._gpio_cool      = Pin(_GPIO_COOL, Pin.IN, Pin.PULL_UP)
+        print(f'\tFan\tGPIO{_GPIO_FAN}')
+        self._gpio_fan       = Pin(_GPIO_FAN, Pin.IN, Pin.PULL_UP)
+        print(f'\tPurge\tGPIO{_GPIO_PURGE}')
+        self._gpio_purge     = Pin(_GPIO_PURGE, Pin.IN, Pin.PULL_UP)
+        print(f'\tEmerg\tGPIO{_GPIO_EMERGENCY}')
+        self._gpio_emergency = Pin(_GPIO_EMERGENCY, Pin.IN, Pin.PULL_UP)
+        print(f'\tZone1\tGPIO{_GPIO_ZONE1}')
+        self._gpio_zone1      = Pin(_GPIO_ZONE1, Pin.IN, Pin.PULL_UP)
+        print(f'\tZone2\tGPIO{_GPIO_ZONE2}')
+        self._gpio_zone2      = Pin(_GPIO_ZONE2, Pin.IN, Pin.PULL_UP)
+        print(f'\tZone3\tGPIO{_GPIO_ZONE3}')
+        self._gpio_zone3      = Pin(_GPIO_ZONE3, Pin.IN, Pin.PULL_UP)
+        print(f'\tZone4\tGPIO{_GPIO_ZONE4}')
+        self._gpio_zone4      = Pin(_GPIO_ZONE4, Pin.IN, Pin.PULL_UP)
 
     def sync_scan_1w(self):
         """Do one-wire system setup."""
@@ -243,7 +260,7 @@ class HvacReader:
             print(e)
             raise
         time.sleep(0.750)  # worst case, default resolution
-        print(f"1W scan for DS18x20 temp sensors got {len(scan_result)}:")
+        print(f"1W scan for DS18x20 temp sensors on GPIO{_GPIO_1W} got {len(scan_result)}:")
         for ds in scan_result:
             try:
                 t = self._ds18x20.read_temp(ds)
@@ -262,7 +279,7 @@ class HvacReader:
         """
         self._ds18x20.convert_temp()
         state = HvacState()
-        state.digitals = (
+        digitals_inverted = (
             0
             | self._gpio_heat.value() << state.DIG_HEAT
             | self._gpio_cool.value() << state.DIG_COOL
@@ -274,6 +291,7 @@ class HvacReader:
             | self._gpio_zone3.value() << state.DIG_ZONE3
             | self._gpio_zone4.value() << state.DIG_ZONE4
         )
+        state.digitals = (~digitals_inverted) & state.DIG_MASK
         await uasyncio.sleep(
             0.750
         )  # worst case conversion time, revisit (don't need 1/16C resolution)
@@ -369,6 +387,11 @@ def sync_setup(led):
 
     hvac_reader = HvacReader()
     hvac_reader.sync_scan_1w()
+
+    print('webrepl.start()...')
+    webrepl.start()
+    print('... did webrepl.start()')
+
     return (led, url, hvac_reader)
 
 
