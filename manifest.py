@@ -2,6 +2,10 @@
 # We can run on a standard micropython build, but these
 # modules will need to be added to :/lib.
 #
+# You'll also need some secrets files, either frozen in
+# or on the board's FS (if supported). Samples for these
+# are at https://github.com/swork/public-secrets.git
+#
 # There are some builtins that can't be frozen, maybe
 # they're completely in C in upy already? Here's the list:
 #
