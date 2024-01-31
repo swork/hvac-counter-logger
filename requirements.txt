@@ -1,6 +1,8 @@
+# Not really a requirements file, just a note about what external
+# modules are needed via "mip install" if ./manifest.py isn't
+# frozen into the micropython build.
+aiohttp
 datetime
 os
 time
 unittest
-aiohttp
-ds18x20
